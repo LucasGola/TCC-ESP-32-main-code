@@ -96,16 +96,10 @@ void setup() {
 
   Serial.println("Conectado ao WiFi");
   // WiFi conectado
-
-
-  timer.setInterval(5000, sendSensor);
-  timer.setInterval(1000, sendEvent);
 }
 
 void loop() {
   valueToPercent();
-
-  timer.run();
 
   Serial.print("Analógico:");
   Serial.print(percent);
@@ -160,6 +154,8 @@ void loop() {
       }
     } else {
       Serial.println("Não é necessário irrigar");
+      sendEvent()
+      sendSensor()
       delay(900000); // Delay de 15m
     }
   }  
