@@ -2,6 +2,9 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+// #include <Blynk.h>
+#include <vector>
+#include <time.h>
 
 #define DHTPIN 15
 #define DHTTYPE DHT11
@@ -12,6 +15,10 @@
 #define NIVEL_AGUA_CHUVA 21
 #define NIVEL_AGUA_CASA 19
 #define MEDIDOR_VAZAO 5
+
+#define BLYNK_TEMPLATE_ID "TMPL2hqh699u4"
+#define BLYNK_TEMPLATE_NAME "TCC"
+#define BLYNK_AUTH_TOKEN "9TmbVVxjlXIbbzY3Q9wkBPpSTKh5Az-D"
 
 DHT dht(DHTPIN, DHTTYPE);
 
@@ -34,10 +41,13 @@ float totalFlow = 0.0;
 float humidity = 0.0;
 float temperature = 0.0;
 
+time_t lastIrrigation;
+
 int minWaterPercent = 30;
 int idealWaterPercent = 50;
 float maxTemperatureClimate = 20.0;
 float minTemperatureClimate = 10;
+float irrigationFrequency = 0;
 
 void pulseCounter() {
   pulseCount++;
@@ -47,6 +57,12 @@ void valueToPercent() {
   int analogValue = analogRead(HIGROMETRO);
   curentPercent = map(analogValue, 1700, 4095, 100, 0);
 }
+
+// TO:DO Criar função de evento que vai informar se a planta foi ou não irrigada
+bool irrigationIntervalVerify() {
+
+}
+// void sendIrrigationEvent() // TO:DO
 
 void sendSensorsDataToAPI() {
   if (WiFi.status() == WL_CONNECTED) { // Verifica se está conectado ao Wi-Fi
@@ -130,6 +146,7 @@ void getData() {
       idealWaterPercent = doc["data"]["idealWaterPercent"];
       maxTemperatureClimate = doc["data"]["maxTemperatureClimate"];
       minTemperatureClimate = doc["data"]["minTemperatureClimate"];
+      // irrigationFrequency = doc["data"]["irrigationFrequency"]; // TO:DO
 
       // Exibe os novos valores
       Serial.print("minWaterPercent: ");
@@ -199,9 +216,7 @@ void setup() {
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnect();
-  } /* else if () { // TO:DO criar verificação de dados salvos a serem enviados para a API
-      // Código de envio
-  } */
+  }
 
   if (WiFi.status() == WL_CONNECTED) {
     getData();
@@ -233,7 +248,7 @@ void loop() {
   Serial.println("%");
   delay(1000);
 
-  if (curentPercent <= minWaterPercent && temperature > minTemperatureClimate && temperature < maxTemperatureClimate) {  // TO:DO receber dados para substituir os valores estáticos e adicionar verificação de período desde a última rega
+  if (curentPercent <= minWaterPercent && temperature > minTemperatureClimate && temperature < maxTemperatureClimate) {  // TO:DO adicionar verificação de período desde a última rega
     if (digitalRead(NIVEL_AGUA_CHUVA) < 1) {
       Serial.println("Irrigando com água da chuva.");
 
