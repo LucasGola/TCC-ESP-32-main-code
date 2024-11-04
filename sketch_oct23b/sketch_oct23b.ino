@@ -41,13 +41,15 @@ float totalFlow = 0.0;
 float humidity = 0.0;
 float temperature = 0.0;
 
-time_t lastIrrigation;
 
 int minWaterPercent = 30;
 int idealWaterPercent = 50;
 float maxTemperatureClimate = 20.0;
 float minTemperatureClimate = 10;
 float irrigationFrequency = 0;
+time_t lastIrrigation = 0;
+time_t now = time(nullptr);
+bool irrigationControl;
 
 void pulseCounter() {
   pulseCount++;
@@ -58,11 +60,75 @@ void valueToPercent() {
   curentPercent = map(analogValue, 1700, 4095, 100, 0);
 }
 
-// TO:DO Criar função de evento que vai informar se a planta foi ou não irrigada
 bool irrigationIntervalVerify() {
+  now = time(nullptr);
 
+  if (lastIrrigation == 0 || difftime(now, lastIrrigation) >= irrigationFrequency * 3600){
+    irrigationControl = true;
+  } else {
+    false;
+  }
 }
-// void sendIrrigationEvent() // TO:DO
+
+void sendIrrigationEvent(String action) {
+    if (WiFi.status() == WL_CONNECTED) { // Verifica se está conectado ao Wi-Fi
+    HTTPClient http;
+    http.begin(String(serverURL) + "/events/register");
+    http.addHeader("Content-Type", "application/json");
+
+    // Se houver pedidos pendentes, envie-os primeiro
+    for (const auto& requestBody : pendingRequests) {
+      int httpResponseCode = http.POST(requestBody);
+      if (httpResponseCode > 0) {
+        Serial.println("Pedido pendente enviado com sucesso!");
+        Serial.println(httpResponseCode);   // Código de resposta do servidor
+        Serial.println(http.getString());   // Resposta do servidor
+      } else {
+        Serial.print("Erro na requisição HTTP pendente: ");
+        Serial.println(httpResponseCode);
+        break;  // Se falhar, pare de tentar enviar os pedidos pendentes
+      }
+    }
+    // Limpa a lista de pedidos pendentes
+    pendingRequests.clear();
+
+    // Cria o objeto JSON atual
+    StaticJsonDocument<200> doc;
+    doc["action"] = action;
+    doc["soilHumidity"] = percent;
+    doc["climateTemperature"] = temperature;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Envia o pedido atual
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode > 0) {
+      Serial.println(httpResponseCode);   // Código de resposta do servidor
+      Serial.println(http.getString());   // Resposta do servidor
+    } else {
+      Serial.print("Erro na requisição HTTP: ");
+      Serial.println(httpResponseCode);
+      // Salva o pedido atual na lista de pendentes
+      pendingRequests.push_back(requestBody);
+    }
+
+    http.end();
+  } else {
+    Serial.println("Erro na conexão Wi-Fi");
+    // Cria o objeto JSON atual
+    StaticJsonDocument<200> doc;
+    doc["action"] = action;
+    doc["soilHumidity"] = percent;
+    doc["climateTemperature"] = temperature;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+    // Salva o pedido atual na lista de pendentes
+    pendingRequests.push_back(requestBody);
+  }
+}
 
 void sendSensorsDataToAPI() {
   if (WiFi.status() == WL_CONNECTED) { // Verifica se está conectado ao Wi-Fi
@@ -146,7 +212,18 @@ void getData() {
       idealWaterPercent = doc["data"]["idealWaterPercent"];
       maxTemperatureClimate = doc["data"]["maxTemperatureClimate"];
       minTemperatureClimate = doc["data"]["minTemperatureClimate"];
-      // irrigationFrequency = doc["data"]["irrigationFrequency"]; // TO:DO
+      irrigationFrequency = doc["data"]["irrigationFrequency"];
+
+/*       // Converte a string ISO 8601 para time_t
+      const char* lastIrrigationStr = doc["data"]["lastIrrigation"];
+      if (strcmp(lastIrrigationStr, "none") == 0) {
+        lastIrrigation = 0; // ou qualquer valor padrão que você escolher
+      } else {
+        struct tm tm = {0}; // Inicializa a struct tm com zeros
+        if (strptime(lastIrrigationStr, "%Y-%m-%dT%H:%M:%S", &tm)) {
+          lastIrrigation = mktime(&tm);
+        }
+      } */
 
       // Exibe os novos valores
       Serial.print("minWaterPercent: ");
@@ -157,6 +234,10 @@ void getData() {
       Serial.println(maxTemperatureClimate);
       Serial.print("minTemperatureClimate: ");
       Serial.println(minTemperatureClimate);
+      Serial.print("irrigationFrequency: ");
+      Serial.println(irrigationFrequency);
+      Serial.print("lastIrrigation: ");
+      Serial.println(lastIrrigation);
     } else {
       Serial.println("Erro ao analisar JSON");
     }
@@ -211,6 +292,15 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     getData();
   }
+
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("Esperando sincronização de tempo...");
+  while (!time(nullptr)) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nTempo sincronizado!");
+
 }
 
 void loop() {
@@ -248,7 +338,8 @@ void loop() {
   Serial.println("%");
   delay(1000);
 
-  if (curentPercent <= minWaterPercent && temperature > minTemperatureClimate && temperature < maxTemperatureClimate) {  // TO:DO adicionar verificação de período desde a última rega
+  // irrigationIntervalVerify();
+  if (curentPercent <= minWaterPercent && temperature > minTemperatureClimate && temperature < maxTemperatureClimate/*  && irrigationControl == true */) {
     if (digitalRead(NIVEL_AGUA_CHUVA) < 1) {
       Serial.println("Irrigando com água da chuva.");
 
@@ -258,6 +349,11 @@ void loop() {
         delay(1000);
       }
       digitalWrite(RELE_BOMBA_CHUVA, HIGH);
+      
+      now = time(nullptr);
+      lastIrrigation = now;
+
+      sendIrrigationEvent("Planta irrigada com água da chuva!");
     } else {
       Serial.println("Sem água");
       if (digitalRead(NIVEL_AGUA_CASA) >= 1) {
@@ -303,10 +399,15 @@ void loop() {
         delay(1000);
       }
       digitalWrite(RELE_BOMBA_CASA, HIGH);
-     
+
+      now = time(nullptr);
+      lastIrrigation = now;
+
+      sendIrrigationEvent("Planta irrigada com água encanada!");
     }
   }
 
+  sendIrrigationEvent("Não foi necessário irrigar a planta!");
   sendSensorsDataToAPI();
 
   delay(15000);
