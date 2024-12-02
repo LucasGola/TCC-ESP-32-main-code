@@ -2,23 +2,26 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-// #include <Blynk.h>
+#include <WiFiClient.h>
+// #include <BlynkSimpleEsp32.h>
 #include <vector>
 #include <time.h>
 
 #define DHTPIN 15
 #define DHTTYPE DHT11
 #define HIGROMETRO 32
-#define RELE_BOMBA_CHUVA 23
-#define RELE_BOMBA_CASA 22
-#define RELE_SOLENOIDE 4
-#define NIVEL_AGUA_CHUVA 21
+#define RELE_BOMBA_CHUVA 4
+#define RELE_BOMBA_CASA 18
+#define RELE_SOLENOIDE 22
+#define RELE_POWER_SOURCE 23
+#define NIVEL_AGUA_CHUVA 2
 #define NIVEL_AGUA_CASA 19
 #define MEDIDOR_VAZAO 5
+#define BATTERY 34
 
-#define BLYNK_TEMPLATE_ID "TMPL2hqh699u4"
-#define BLYNK_TEMPLATE_NAME "TCC"
-#define BLYNK_AUTH_TOKEN "9TmbVVxjlXIbbzY3Q9wkBPpSTKh5Az-D"
+// #define BLYNK_TEMPLATE_ID "TMPL2hqh699u4"
+// #define BLYNK_TEMPLATE_NAME "TCC"
+// #define BLYNK_AUTH_TOKEN "MVBcS8Gv-cNL_XUaEwenm69fwWYPS5jJ"
 
 DHT dht(DHTPIN, DHTTYPE);
 
@@ -32,19 +35,25 @@ volatile int pulseCount = 0;
 float flowRate = 0.0;
 unsigned long oldTime = 0;
 int curentPercent = 0;
+String stringMessage = "";
 
 // Lista para armazenar objetos JSON
-std::vector<String> pendingRequests;
+std::vector<String> pendingRequestsIrrigation;
+std::vector<String> pendingRequestsSensors;
 
 int percent = 0;
 float totalFlow = 0.0;
 float humidity = 0.0;
 float temperature = 0.0;
+float batteryPercent = 0.0;
+
+int rainwaterLevel = 0;
+int housewaterLevel = 0;
 
 
 int minWaterPercent = 30;
 int idealWaterPercent = 50;
-float maxTemperatureClimate = 20.0;
+float maxTemperatureClimate = 35.0;
 float minTemperatureClimate = 10;
 float irrigationFrequency = 0;
 time_t lastIrrigation = 0;
@@ -70,6 +79,27 @@ bool irrigationIntervalVerify() {
   }
 }
 
+/* BLYNK_WRITE(V3) {
+  int pumpChuvaState = param.asInt();
+  digitalWrite(RELE_BOMBA_CHUVA, pumpChuvaState);
+  Serial.print("Estado da bomba de chuva: ");
+  Serial.println(pumpChuvaState ? "Ligada" : "Desligada");
+}
+
+BLYNK_WRITE(V4) {
+  int pumpCasaState = param.asInt();
+  digitalWrite(RELE_BOMBA_CASA, pumpCasaState);
+  Serial.print("Estado da bomba de casa: ");
+  Serial.println(pumpCasaState ? "Ligada" : "Desligada");
+}
+
+BLYNK_WRITE(V5) {
+  int valveState = param.asInt();
+  digitalWrite(RELE_SOLENOIDE, valveState);
+  Serial.print("Estado da válvula: ");
+  Serial.println(valveState ? "Aberta" : "Fechada");
+} */
+
 void sendIrrigationEvent(String action) {
     if (WiFi.status() == WL_CONNECTED) { // Verifica se está conectado ao Wi-Fi
     HTTPClient http;
@@ -77,7 +107,7 @@ void sendIrrigationEvent(String action) {
     http.addHeader("Content-Type", "application/json");
 
     // Se houver pedidos pendentes, envie-os primeiro
-    for (const auto& requestBody : pendingRequests) {
+    for (const auto& requestBody : pendingRequestsIrrigation) {
       int httpResponseCode = http.POST(requestBody);
       if (httpResponseCode > 0) {
         Serial.println("Pedido pendente enviado com sucesso!");
@@ -90,7 +120,7 @@ void sendIrrigationEvent(String action) {
       }
     }
     // Limpa a lista de pedidos pendentes
-    pendingRequests.clear();
+    pendingRequestsIrrigation.clear();
 
     // Cria o objeto JSON atual
     StaticJsonDocument<200> doc;
@@ -111,7 +141,7 @@ void sendIrrigationEvent(String action) {
       Serial.print("Erro na requisição HTTP: ");
       Serial.println(httpResponseCode);
       // Salva o pedido atual na lista de pendentes
-      pendingRequests.push_back(requestBody);
+      pendingRequestsIrrigation.push_back(requestBody);
     }
 
     http.end();
@@ -126,7 +156,7 @@ void sendIrrigationEvent(String action) {
     String requestBody;
     serializeJson(doc, requestBody);
     // Salva o pedido atual na lista de pendentes
-    pendingRequests.push_back(requestBody);
+    pendingRequestsIrrigation.push_back(requestBody);
   }
 }
 
@@ -137,7 +167,7 @@ void sendSensorsDataToAPI() {
     http.addHeader("Content-Type", "application/json");
 
     // Se houver pedidos pendentes, envie-os primeiro
-    for (const auto& requestBody : pendingRequests) {
+    for (const auto& requestBody : pendingRequestsSensors) {
       int httpResponseCode = http.POST(requestBody);
       if (httpResponseCode > 0) {
         Serial.println("Pedido pendente enviado com sucesso!");
@@ -145,12 +175,12 @@ void sendSensorsDataToAPI() {
         Serial.println(http.getString());   // Resposta do servidor
       } else {
         Serial.print("Erro na requisição HTTP pendente: ");
-        Serial.println(httpResponseCode);
+        Serial.println(httpResponseCode);\
         break;  // Se falhar, pare de tentar enviar os pedidos pendentes
       }
     }
     // Limpa a lista de pedidos pendentes
-    pendingRequests.clear();
+    pendingRequestsSensors.clear();
 
     // Cria o objeto JSON atual
     StaticJsonDocument<200> doc;
@@ -158,6 +188,7 @@ void sendSensorsDataToAPI() {
     doc["waterFlow"] = totalFlow;
     doc["dht11Humidity"] = humidity;
     doc["dht11Temperature"] = temperature;
+    doc["batteryPercent"] = batteryPercent;
 
     String requestBody;
     serializeJson(doc, requestBody);
@@ -172,7 +203,7 @@ void sendSensorsDataToAPI() {
       Serial.print("Erro na requisição HTTP: ");
       Serial.println(httpResponseCode);
       // Salva o pedido atual na lista de pendentes
-      pendingRequests.push_back(requestBody);
+      pendingRequestsSensors.push_back(requestBody);
     }
 
     http.end();
@@ -184,11 +215,12 @@ void sendSensorsDataToAPI() {
     doc["waterFlow"] = totalFlow;
     doc["dht11Humidity"] = humidity;
     doc["dht11Temperature"] = temperature;
+    doc["batteryPercent"] = batteryPercent;
 
     String requestBody;
     serializeJson(doc, requestBody);
     // Salva o pedido atual na lista de pendentes
-    pendingRequests.push_back(requestBody);
+    pendingRequestsSensors.push_back(requestBody);
   }
 }
 
@@ -265,20 +297,38 @@ void wifiConnect() {
   }
 }
 
+void changePowerSource() {
+  int rawValue = analogRead(BATTERY);
+  batteryPercent = (rawValue * 100) / 4095.0;
+
+  if (batteryPercent <= 90.0) {
+    digitalWrite(RELE_POWER_SOURCE, LOW);
+  } else {
+    digitalWrite(RELE_POWER_SOURCE, HIGH);
+  }
+
+  delay(500);
+}
+
 void setup() {
+  // Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+
   pinMode(HIGROMETRO, INPUT);
   pinMode(RELE_BOMBA_CHUVA, OUTPUT);
   pinMode(RELE_BOMBA_CASA, OUTPUT);
   pinMode(RELE_SOLENOIDE, OUTPUT);
+  pinMode(RELE_POWER_SOURCE, OUTPUT);
   pinMode(NIVEL_AGUA_CHUVA, INPUT);
   pinMode(NIVEL_AGUA_CASA, INPUT); 
   pinMode(MEDIDOR_VAZAO, INPUT);
+  pinMode(BATTERY, INPUT);
 
   attachInterrupt(digitalPinToInterrupt(MEDIDOR_VAZAO), pulseCounter, FALLING);
 
   digitalWrite(RELE_BOMBA_CHUVA, HIGH);
   digitalWrite(RELE_BOMBA_CASA, HIGH);
   digitalWrite(RELE_SOLENOIDE, HIGH);
+  digitalWrite(RELE_POWER_SOURCE, HIGH);
   delay(1000);
 
   Serial.begin(115200);
@@ -304,22 +354,29 @@ void setup() {
 }
 
 void loop() {
+  // Blynk.run();
+
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnect();
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
+  } else {
     getData();
   }
 
+  changePowerSource();
+/*   Blynk.virtualWrite(V6, batteryPercent); // Envia o nível da bateria para o widget V6
+
   valueToPercent();
-  int analogValue = analogRead(HIGROMETRO);       // Este código é o mesmo da função"valueToPercent() mas essa função é chamada
+  int analogValue = analogRead(HIGROMETRO);       // Este código é o mesmo da função "valueToPercent()" mas essa função é chamada
   percent = map(analogValue, 1700, 4095, 100, 0); // Várias vezes ao longo do cóodigo e precisamos salvar a primeira medição
+  // Blynk.virtualWrite(V0, percent); // Envia a umidade do solo para o widget V0
   
   delay(1500);
   humidity = dht.readHumidity();
   temperature = dht.readTemperature();
   delay(500);
+
+/*   Blynk.virtualWrite(V1, temperature); // Envia a temperatura para o widget V1
+  Blynk.virtualWrite(V2, humidity); // Envia a umidade para o widget V2 */
 
   if (isnan(temperature)) {
     Serial.println("Erro DHT11");
@@ -339,76 +396,120 @@ void loop() {
   delay(1000);
 
   // irrigationIntervalVerify();
-  if (curentPercent <= minWaterPercent && temperature > minTemperatureClimate && temperature < maxTemperatureClimate/*  && irrigationControl == true */) {
-    if (digitalRead(NIVEL_AGUA_CHUVA) < 1) {
-      Serial.println("Irrigando com água da chuva.");
+  if (curentPercent <= minWaterPercent ) {
+    if (temperature > minTemperatureClimate) {
+      if (temperature < maxTemperatureClimate) {
+        /* if (irrigationControl == true) {
 
-      digitalWrite(RELE_BOMBA_CHUVA, LOW);
-      while (curentPercent <= idealWaterPercent && digitalRead(NIVEL_AGUA_CHUVA) < 1) {
-        valueToPercent();
-        delay(1000);
-      }
-      digitalWrite(RELE_BOMBA_CHUVA, HIGH);
-      
-      now = time(nullptr);
-      lastIrrigation = now;
+        } else {
+          sendIrrigationEvent("Não foi possível irrigar a planta pois ainda não passou o intervalo entre irrigações"); // TO:DO
+        }*/
+        rainwaterLevel = digitalRead(NIVEL_AGUA_CHUVA); 
+        // Blynk.virtualWrite(V7, rainwaterLevel); // Envia o nível da água da chuva para o widget V7
+        if (rainwaterLevel < 1) {
+          Serial.println("Irrigando com água da chuva.");
 
-      sendIrrigationEvent("Planta irrigada com água da chuva!");
-    } else {
-      Serial.println("Sem água");
-      if (digitalRead(NIVEL_AGUA_CASA) >= 1) {
-        digitalWrite(RELE_SOLENOIDE, LOW);
+          digitalWrite(RELE_BOMBA_CHUVA, LOW);
+          while (curentPercent <= idealWaterPercent && digitalRead(NIVEL_AGUA_CHUVA) < 1) {
+            valueToPercent();
+/*             Blynk.virtualWrite(V0, curentPercent); // Envia a umidade do solo para o widget V0
+            rainwaterLevel = digitalRead(NIVEL_AGUA_CHUVA); 
+            Blynk.virtualWrite(V7, rainwaterLevel); // Envia o nível da água da chuva para o widget V7 */
 
-        while (digitalRead(NIVEL_AGUA_CASA) >= 1) {
-          if ((millis() - oldTime) > 1000) { // calcula a cada segundo
-            detachInterrupt(digitalPinToInterrupt(MEDIDOR_VAZAO));
-            
-            // TO:DO ajustar valores. Testar na prática o medidor de vazão.
-            flowRate = ((1000.0 / (millis() - oldTime)) * pulseCount) / 7.5;
-            oldTime = millis();
-            pulseCount = 0;
+            delay(1000);
+          }
+          digitalWrite(RELE_BOMBA_CHUVA, HIGH);
 
-            // Adiciona a vazão calculada ao acumulador totalFlow
-            totalFlow += flowRate / 60.0; // converte L/min para Litros por segundo
-            
-            Serial.print("Vazão: ");
-            Serial.print(flowRate);
-            Serial.print(" L/min   ");
+          valueToPercent();
+/*           Blynk.virtualWrite(V0, curentPercent); // Envia a umidade do solo para o widget V0
+          rainwaterLevel = digitalRead(NIVEL_AGUA_CHUVA); 
+          Blynk.virtualWrite(V7, rainwaterLevel); // Envia o nível da água da chuva para o widget V7 */
+          
+          now = time(nullptr);
+          lastIrrigation = now;
 
-            Serial.print("Total de água: ");
+          sendIrrigationEvent("Planta irrigada com água da chuva!");
+        } else {
+          Serial.println("Sem água");
+          housewaterLevel = digitalRead(NIVEL_AGUA_CASA);
+          // Blynk.virtualWrite(V9, housewaterLevel); // Envia o nível da água da casa para o widget V9
+          if (housewaterLevel >= 1) {
+            digitalWrite(RELE_SOLENOIDE, LOW);
+
+            while (housewaterLevel >= 1) {
+              if ((millis() - oldTime) > 1000) { // calcula a cada segundo
+                detachInterrupt(digitalPinToInterrupt(MEDIDOR_VAZAO));
+                
+                // TO:DO ajustar valores. Testar na prática o medidor de vazão.
+                flowRate = ((1000.0 / (millis() - oldTime)) * pulseCount) / 7.5;
+                oldTime = millis();
+                pulseCount = 0;
+
+                // Adiciona a vazão calculada ao acumulador totalFlow
+                totalFlow += flowRate / 60.0; // converte L/min para Litros por segundo
+                
+                Serial.print("Vazão: ");
+                Serial.print(flowRate);
+                Serial.print(" L/min   ");
+
+                Serial.print("Total de água: ");
+                Serial.print(totalFlow);
+                Serial.println(" Litros");
+                
+                attachInterrupt(digitalPinToInterrupt(MEDIDOR_VAZAO), pulseCounter, FALLING);
+
+                housewaterLevel = digitalRead(NIVEL_AGUA_CASA);
+                // Blynk.virtualWrite(V9, housewaterLevel); // Envia o nível da água da casa para o widget V9
+              }
+
+              delay(500);
+            }
+
+            Serial.print("Total final de água: ");
             Serial.print(totalFlow);
             Serial.println(" Litros");
-            
-            attachInterrupt(digitalPinToInterrupt(MEDIDOR_VAZAO), pulseCounter, FALLING);
+
+            digitalWrite(RELE_SOLENOIDE, HIGH);
+
+            housewaterLevel = digitalRead(NIVEL_AGUA_CASA);
+            // Blynk.virtualWrite(V9, housewaterLevel); // Envia o nível da água da casa para o widget V9
           }
 
-          delay(500);
+          Serial.println("Irrigando com água encanada.");
+          digitalWrite(RELE_BOMBA_CASA, LOW);
+
+          valueToPercent();
+          // Blynk.virtualWrite(V0, curentPercent); // Envia a umidade do solo para o widget V0
+
+          while (curentPercent <= idealWaterPercent && digitalRead(NIVEL_AGUA_CASA) < 1) {
+            valueToPercent();
+/*             Blynk.virtualWrite(V0, curentPercent); // Envia a umidade do solo para o widget V0
+            housewaterLevel = digitalRead(NIVEL_AGUA_CASA);
+            Blynk.virtualWrite(V9, housewaterLevel); // Envia o nível da água da casa para o widget V9 */
+            delay(1000);
+          }
+          digitalWrite(RELE_BOMBA_CASA, HIGH);
+
+          valueToPercent();
+/*           Blynk.virtualWrite(V0, curentPercent); // Envia a umidade do solo para o widget V0
+          housewaterLevel = digitalRead(NIVEL_AGUA_CASA);
+          Blynk.virtualWrite(V9, housewaterLevel); // Envia o nível da água da casa para o widget V9 */
+
+          now = time(nullptr);
+          lastIrrigation = now;
+
+          sendIrrigationEvent("Planta irrigada com água encanada!");
         }
-
-        Serial.print("Total final de água: ");
-        Serial.print(totalFlow);
-        Serial.println(" Litros");
-
-        digitalWrite(RELE_SOLENOIDE, HIGH);
+      } else {
+        sendIrrigationEvent("Não foi possível irrigar a planta pois o clima estava muito quente");
       }
-
-      Serial.println("Irrigando com água encanada.");
-      digitalWrite(RELE_BOMBA_CASA, LOW);
-      while (curentPercent <= idealWaterPercent && digitalRead(NIVEL_AGUA_CASA) < 1) {
-        valueToPercent();
-        delay(1000);
-      }
-      digitalWrite(RELE_BOMBA_CASA, HIGH);
-
-      now = time(nullptr);
-      lastIrrigation = now;
-
-      sendIrrigationEvent("Planta irrigada com água encanada!");
+    } else {
+      sendIrrigationEvent("Não foi possível irrigar a planta pois o clima estava muito frio");
     }
+  } else {
+    sendIrrigationEvent("Não foi necessário irrigar a planta!");
   }
 
-  sendIrrigationEvent("Não foi necessário irrigar a planta!");
   sendSensorsDataToAPI();
-
-  delay(15000);
+  delay(5000);
 }
